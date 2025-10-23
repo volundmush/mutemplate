@@ -3,20 +3,6 @@ BEGIN TRANSACTION;
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS citext;
 
-CREATE OR REPLACE FUNCTION notify_table_change() RETURNS trigger AS $$
-BEGIN
-    PERFORM pg_notify(
-        'table_changes',
-        json_build_object(
-            'table', TG_TABLE_NAME,
-            'operation', TG_OP,
-            'id', COALESCE(NEW.id, OLD.id)
-        )::text
-    );
-RETURN NEW;
-END;
-$$ LANGUAGE plpgsql;
-
 -- auth section for users
 
 CREATE TABLE users
@@ -39,9 +25,24 @@ ALTER TABLE users
         email ~* '^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$'
         );
 
-CREATE TRIGGER users_trigger
-    AFTER INSERT OR UPDATE OR DELETE ON users
-    FOR EACH ROW EXECUTE FUNCTION notify_table_change();
+CREATE TABLE user_components (
+    user_id         UUID        NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    component_name  TEXT        NOT NULL,
+    data            JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    PRIMARY KEY (user_id, component_name)
+);
+
+CREATE TABLE user_events (
+    user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    event_id BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    topic TEXT NOT NULL,
+    data JSONB NOT NULL DEFAULT '{}'::jsonb,
+    PRIMARY KEY (user_id, event_id)
+);
 
 CREATE TABLE passwords
 (
@@ -68,13 +69,11 @@ FROM users u
 CREATE TABLE loginrecords
 (
     id         BIGSERIAL PRIMARY KEY,
-    user_id    UUID      NOT NULL,
+    user_id    UUID      NOT NULL REFERENCES users (id) ON DELETE CASCADE,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     ip_address INET      NOT NULL,
     user_agent TEXT      NOT NULL,
-    success    BOOLEAN   NOT NULL,
-    CONSTRAINT fk_user
-        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE CASCADE
+    success    BOOLEAN   NOT NULL
 );
 
 CREATE VIEW loginrecords_with_user AS
@@ -93,21 +92,39 @@ FROM loginrecords l
 CREATE TABLE characters
 (
     id             UUID PRIMARY KEY   DEFAULT gen_random_uuid(),
-    user_id        UUID      NOT NULL,
+    user_id        UUID      NOT NULL REFERENCES users(id) ON DELETE RESTRICT,
     name           CITEXT    NOT NULL,
     created_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_active_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at     TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    deleted_at     TIMESTAMPTZ NULL,
-    CONSTRAINT fk_user
-        FOREIGN KEY (user_id) REFERENCES users (id) ON DELETE RESTRICT
+    deleted_at     TIMESTAMPTZ NULL
 );
 
 CREATE UNIQUE INDEX unique_character_name ON characters (name) WHERE deleted_at IS NULL;
 
-CREATE TRIGGER characters_trigger
-    AFTER INSERT OR UPDATE OR DELETE ON characters
-    FOR EACH ROW EXECUTE FUNCTION notify_table_change();
+CREATE TABLE character_components (
+    character_id    UUID        NOT NULL REFERENCES characters(id) ON DELETE CASCADE,
+    component_name  TEXT        NOT NULL,
+    data            JSONB       NOT NULL DEFAULT '{}'::jsonb,
+    created_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
 
+    PRIMARY KEY (character_id, component_name)
+);
+
+CREATE TABLE character_sessions (
+    character_id UUID NOT NULL PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    activity_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+CREATE TABLE character_events (
+    character_id UUID NOT NULL REFERENCES character_sessions(character_id) ON DELETE CASCADE,
+    event_id BIGINT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    topic TEXT NOT NULL,
+    data JSONB NOT NULL DEFAULT '{}'::jsonb,
+    PRIMARY KEY(character_id, event_id)
+);
 
 COMMIT;
